@@ -1,7 +1,6 @@
 """
-middleware/security.py — All security hardening in one place.
-Covers: Rate limiting, security headers, SQL injection hints,
-brute-force protection, suspicious request detection.
+middleware/security.py — Security middleware.
+OPTIONS requests pass through completely untouched for CORS preflight.
 """
 import time
 import re
@@ -15,15 +14,13 @@ from config import get_settings
 
 settings = get_settings()
 
-# ── Redis for rate limit tracking ────────────────────────────────────────────
 try:
     r = redis_client.from_url(settings.REDIS_URL, decode_responses=True)
+    r.ping()
 except Exception:
     r = None
     logger.warning("Redis not available — rate limiting disabled")
 
-
-# ── Suspicious patterns to block ─────────────────────────────────────────────
 ATTACK_PATTERNS = [
     r"(\bUNION\b.*\bSELECT\b)",
     r"(\bDROP\b.*\bTABLE\b)",
@@ -44,20 +41,19 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
 
-        # ── CRITICAL: Let OPTIONS (CORS preflight) pass through untouched ──
+        # Pass OPTIONS through completely — CORS handles these
         if request.method == "OPTIONS":
             return await call_next(request)
 
         client_ip = self._get_client_ip(request)
         path = request.url.path
 
-        # ── 1. Block suspicious request content ──────────────────────────────
         if request.method in ("POST", "PUT", "PATCH"):
             try:
                 body = await request.body()
                 body_text = body.decode("utf-8", errors="ignore")
                 if is_suspicious(body_text):
-                    logger.warning(f"🚨 Suspicious payload blocked from {client_ip} → {path}")
+                    logger.warning(f"Blocked: {client_ip} -> {path}")
                     return JSONResponse(
                         status_code=400,
                         content={"detail": "Invalid request content"}
@@ -68,36 +64,33 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             except Exception:
                 pass
 
-        # ── 2. Rate limiting ──────────────────────────────────────────────────
         if r:
-            limit = settings.LOGIN_RATE_LIMIT_PER_MINUTE if "/auth/login" in path \
-                else settings.RATE_LIMIT_PER_MINUTE
-            key = f"rate:{client_ip}:{path[:30]}"
-            current = r.get(key)
+            try:
+                limit = settings.LOGIN_RATE_LIMIT_PER_MINUTE if "/auth/login" in path \
+                    else settings.RATE_LIMIT_PER_MINUTE
+                key = f"rate:{client_ip}:{path[:30]}"
+                current = r.get(key)
+                if current and int(current) >= limit:
+                    return JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too many requests. Please slow down."},
+                        headers={"Retry-After": "60"}
+                    )
+                pipe = r.pipeline()
+                pipe.incr(key)
+                pipe.expire(key, 60)
+                pipe.execute()
+            except Exception:
+                pass
 
-            if current and int(current) >= limit:
-                logger.warning(f"🚨 Rate limit hit: {client_ip} → {path}")
-                return JSONResponse(
-                    status_code=429,
-                    content={"detail": "Too many requests. Please slow down."},
-                    headers={"Retry-After": "60"}
-                )
-            pipe = r.pipeline()
-            pipe.incr(key)
-            pipe.expire(key, 60)
-            pipe.execute()
-
-        # ── 3. Process request ────────────────────────────────────────────────
         start_time = time.time()
         response = await call_next(request)
         process_time = time.time() - start_time
 
-        # ── 4. Add security headers ───────────────────────────────────────────
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         response.headers["X-Process-Time"] = str(round(process_time * 1000, 2)) + "ms"
         response.headers["Server"] = "Hawker-Algo"
 
