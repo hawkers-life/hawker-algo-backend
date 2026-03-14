@@ -35,7 +35,7 @@ anthropic==0.28.0
 yfinance==0.2.40
 pandas==2.0.3
 numpy==1.25.2
-pandas-ta==0.3.14b0
+git+https://github.com/twopirllc/pandas-ta.git@development
 scipy==1.11.4
 
 # ── Broker SDKs ──────────────────────────────────────────
