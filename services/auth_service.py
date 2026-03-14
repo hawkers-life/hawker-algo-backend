@@ -137,3 +137,22 @@ def get_current_user(
         raise credentials_exception
 
     return user
+
+
+# ── Role-based dependencies ───────────────────────────────────────────────────
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency — only allows admin users."""
+    if str(current_user.role).lower() not in ("admin", "userrole.admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
+def require_sebi_accepted(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency — ensures user accepted SEBI disclaimer before trading."""
+    if not current_user.sebi_disclaimer_accepted:
+        raise HTTPException(
+            status_code=403,
+            detail="Please accept the SEBI risk disclaimer before trading"
+        )
+    return current_user
