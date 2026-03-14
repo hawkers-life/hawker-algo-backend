@@ -17,12 +17,60 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from loguru import logger
-import pandas_ta as ta
 from services.market_data import fetch_historical, fetch_live_quote, get_index_data
 from config import get_settings
 
 settings = get_settings()
 
+
+# ── Pure pandas/numpy indicator helpers ──────────────────────────────────────
+
+def _ema(series: pd.Series, length: int) -> pd.Series:
+    return series.ewm(span=length, adjust=False).mean()
+
+
+def _rsi(series: pd.Series, length: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=length - 1, adjust=False).mean()
+    avg_loss = loss.ewm(com=length - 1, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def _bbands(series: pd.Series, length: int = 20, std: float = 2.0):
+    mid = series.rolling(window=length).mean()
+    sigma = series.rolling(window=length).std()
+    upper = mid + std * sigma
+    lower = mid - std * sigma
+    return upper, mid, lower
+
+
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+    return tr.ewm(span=length, adjust=False).mean()
+
+
+def _vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    typical_price = (high + low + close) / 3
+    return (typical_price * volume).cumsum() / volume.cumsum()
+
+
+# ── Indicator summary ─────────────────────────────────────────────────────────
 
 def _build_indicator_summary(df: pd.DataFrame) -> dict:
     """Calculate key technical indicators and return as dict for AI context."""
@@ -35,49 +83,40 @@ def _build_indicator_summary(df: pd.DataFrame) -> dict:
     vol   = df["Volume"]
 
     try:
-        ema9  = ta.ema(close, length=9)
-        ema21 = ta.ema(close, length=21)
-        ema50 = ta.ema(close, length=50)
-        rsi14 = ta.rsi(close, length=14)
-        macd  = ta.macd(close)
-        bb    = ta.bbands(close, length=20)
-        atr   = ta.atr(high, low, close, length=14)
-        vwap  = ta.vwap(high, low, close, vol)
+        ema9  = _ema(close, 9)
+        ema21 = _ema(close, 21)
+        ema50 = _ema(close, 50)
+        rsi14 = _rsi(close, 14)
+        macd_line, macd_signal, macd_hist = _macd(close)
+        bb_upper, bb_mid, bb_lower = _bbands(close, 20)
+        atr   = _atr(high, low, close, 14)
+        vwap  = _vwap(high, low, close, vol)
 
-        last = -1  # last row index
+        last = -1
 
-        # Price vs moving averages
-        ltp = float(close.iloc[last])
-        e9  = float(ema9.iloc[last])  if ema9 is not None and not pd.isna(ema9.iloc[last])  else None
-        e21 = float(ema21.iloc[last]) if ema21 is not None and not pd.isna(ema21.iloc[last]) else None
-        e50 = float(ema50.iloc[last]) if ema50 is not None and not pd.isna(ema50.iloc[last]) else None
+        ltp  = float(close.iloc[last])
+        e9   = float(ema9.iloc[last])  if not pd.isna(ema9.iloc[last])  else None
+        e21  = float(ema21.iloc[last]) if not pd.isna(ema21.iloc[last]) else None
+        e50  = float(ema50.iloc[last]) if not pd.isna(ema50.iloc[last]) else None
 
-        # RSI
-        rsi_val = float(rsi14.iloc[last]) if rsi14 is not None and not pd.isna(rsi14.iloc[last]) else 50
+        rsi_val   = float(rsi14.iloc[last])       if not pd.isna(rsi14.iloc[last])       else 50
+        macd_val  = float(macd_line.iloc[last])   if not pd.isna(macd_line.iloc[last])   else 0
+        macd_sig  = float(macd_signal.iloc[last]) if not pd.isna(macd_signal.iloc[last]) else 0
+        macd_h    = float(macd_hist.iloc[last])   if not pd.isna(macd_hist.iloc[last])   else 0
 
-        # MACD
-        macd_val = float(macd["MACD_12_26_9"].iloc[last])   if macd is not None else 0
-        macd_sig = float(macd["MACDs_12_26_9"].iloc[last])  if macd is not None else 0
-        macd_hist= float(macd["MACDh_12_26_9"].iloc[last])  if macd is not None else 0
+        bb_u = float(bb_upper.iloc[last]) if not pd.isna(bb_upper.iloc[last]) else ltp * 1.02
+        bb_l = float(bb_lower.iloc[last]) if not pd.isna(bb_lower.iloc[last]) else ltp * 0.98
+        bb_m = float(bb_mid.iloc[last])   if not pd.isna(bb_mid.iloc[last])   else ltp
 
-        # Bollinger Bands
-        bb_upper = float(bb["BBU_20_2.0"].iloc[last]) if bb is not None else ltp * 1.02
-        bb_lower = float(bb["BBL_20_2.0"].iloc[last]) if bb is not None else ltp * 0.98
-        bb_mid   = float(bb["BBM_20_2.0"].iloc[last]) if bb is not None else ltp
+        atr_val  = float(atr.iloc[last])  if not pd.isna(atr.iloc[last])  else 0
+        atr_pct  = (atr_val / ltp * 100)  if ltp > 0 else 0
 
-        # ATR (volatility)
-        atr_val  = float(atr.iloc[last]) if atr is not None and not pd.isna(atr.iloc[last]) else 0
-        atr_pct  = (atr_val / ltp * 100) if ltp > 0 else 0
+        vwap_val = float(vwap.iloc[last]) if not pd.isna(vwap.iloc[last]) else ltp
 
-        # VWAP
-        vwap_val = float(vwap.iloc[last]) if vwap is not None and not pd.isna(vwap.iloc[last]) else ltp
-
-        # Volume analysis
         avg_vol_20 = float(vol.tail(20).mean())
         today_vol  = float(vol.iloc[last])
         vol_ratio  = today_vol / avg_vol_20 if avg_vol_20 > 0 else 1
 
-        # Trend detection
         trend = "neutral"
         if e9 and e21 and e50:
             if ltp > e9 > e21 > e50:
@@ -89,31 +128,30 @@ def _build_indicator_summary(df: pd.DataFrame) -> dict:
             elif ltp < e21 < e50:
                 trend = "downtrend"
 
-        # Recent price change
-        change_5d  = ((ltp - float(close.iloc[-6])) / float(close.iloc[-6]) * 100) if len(close) >= 6 else 0
+        change_5d  = ((ltp - float(close.iloc[-6]))  / float(close.iloc[-6])  * 100) if len(close) >= 6  else 0
         change_20d = ((ltp - float(close.iloc[-21])) / float(close.iloc[-21]) * 100) if len(close) >= 21 else 0
 
         return {
-            "ltp": round(ltp, 2),
-            "ema9": round(e9, 2) if e9 else None,
-            "ema21": round(e21, 2) if e21 else None,
-            "ema50": round(e50, 2) if e50 else None,
-            "rsi": round(rsi_val, 1),
-            "macd": round(macd_val, 3),
-            "macd_signal": round(macd_sig, 3),
-            "macd_histogram": round(macd_hist, 3),
-            "bb_upper": round(bb_upper, 2),
-            "bb_lower": round(bb_lower, 2),
-            "bb_mid": round(bb_mid, 2),
-            "atr": round(atr_val, 2),
-            "atr_pct": round(atr_pct, 2),
-            "vwap": round(vwap_val, 2),
-            "volume_ratio": round(vol_ratio, 2),
-            "trend": trend,
-            "price_vs_vwap": "above" if ltp > vwap_val else "below",
-            "price_vs_bb_mid": "above" if ltp > bb_mid else "below",
-            "change_5d_pct": round(change_5d, 2),
-            "change_20d_pct": round(change_20d, 2),
+            "ltp":             round(ltp, 2),
+            "ema9":            round(e9, 2)       if e9  else None,
+            "ema21":           round(e21, 2)      if e21 else None,
+            "ema50":           round(e50, 2)      if e50 else None,
+            "rsi":             round(rsi_val, 1),
+            "macd":            round(macd_val, 3),
+            "macd_signal":     round(macd_sig, 3),
+            "macd_histogram":  round(macd_h, 3),
+            "bb_upper":        round(bb_u, 2),
+            "bb_lower":        round(bb_l, 2),
+            "bb_mid":          round(bb_m, 2),
+            "atr":             round(atr_val, 2),
+            "atr_pct":         round(atr_pct, 2),
+            "vwap":            round(vwap_val, 2),
+            "volume_ratio":    round(vol_ratio, 2),
+            "trend":           trend,
+            "price_vs_vwap":   "above" if ltp > vwap_val else "below",
+            "price_vs_bb_mid": "above" if ltp > bb_m else "below",
+            "change_5d_pct":   round(change_5d, 2),
+            "change_20d_pct":  round(change_20d, 2),
         }
     except Exception as e:
         logger.error(f"Indicator calculation error: {e}")
@@ -122,13 +160,12 @@ def _build_indicator_summary(df: pd.DataFrame) -> dict:
 
 def _determine_market_regime(indicators: dict, index_data: dict) -> str:
     """Classify current market regime based on indicators."""
-    nifty = index_data.get("NIFTY 50", {})
+    nifty     = index_data.get("NIFTY 50", {})
     nifty_chg = nifty.get("change_pct", 0)
-
-    rsi = indicators.get("rsi", 50)
-    trend = indicators.get("trend", "neutral")
+    rsi       = indicators.get("rsi", 50)
+    trend     = indicators.get("trend", "neutral")
     vol_ratio = indicators.get("volume_ratio", 1)
-    atr_pct = indicators.get("atr_pct", 1)
+    atr_pct   = indicators.get("atr_pct", 1)
 
     if "downtrend" in trend and nifty_chg < -0.5:
         return "bearish_trending"
@@ -145,31 +182,24 @@ def _determine_market_regime(indicators: dict, index_data: dict) -> str:
 def get_ai_strategy_suggestion(
     symbol: str,
     exchange: str = "NSE",
-    trading_style: str = "intraday",  # intraday | swing | options
-    risk_tolerance: str = "moderate",  # conservative | moderate | aggressive
+    trading_style: str = "intraday",
+    risk_tolerance: str = "moderate",
     capital: float = 100_000.0,
 ) -> dict:
-    """
-    Main function: analyses symbol with real market data and
-    returns AI-generated strategy suggestion via Claude.
-    """
     if not settings.ANTHROPIC_API_KEY:
         return {
             "error": "ANTHROPIC_API_KEY not configured. Please add it to your .env file.",
             "setup_guide": "Get your free API key at: https://console.anthropic.com"
         }
 
-    # ── 1. Gather market data ─────────────────────────────────────────────────
     logger.info(f"🤖 AI Advisor analysing {symbol} for {trading_style} trading...")
 
-    # Fetch different timeframes for multi-timeframe analysis
     df_daily  = fetch_historical(symbol, exchange, "1d", days=90)
     df_weekly = fetch_historical(symbol, exchange, "1wk", days=365)
 
     if df_daily.empty:
         return {"error": f"Could not fetch market data for {symbol}. Please check the symbol name."}
 
-    # Calculate indicators
     daily_indicators  = _build_indicator_summary(df_daily)
     weekly_indicators = _build_indicator_summary(df_weekly)
     index_data        = get_index_data()
@@ -178,7 +208,6 @@ def get_ai_strategy_suggestion(
 
     ltp = daily_indicators.get("ltp", live_quote.get("ltp", 0))
 
-    # ── 2. Build prompt ───────────────────────────────────────────────────────
     prompt = f"""You are a senior quantitative analyst and algorithmic trading expert specializing in Indian stock markets (NSE/BSE).
 
 Analyse the following real-time market data for {symbol.upper()} ({exchange}) and provide a detailed, actionable strategy suggestion.
@@ -256,12 +285,11 @@ The JSON must follow this exact structure:
   "sebi_disclaimer": "For educational purposes only. Not investment advice."
 }}
 
-Use the actual price data provided. All prices must be realistic relative to the current LTP of ₹{ltp}. 
+Use the actual price data provided. All prices must be realistic relative to the current LTP of ₹{ltp}.
 Calculate position size as: floor(capital × position_size_pct / entry_price).
 Calculate risk-reward as: (target_1_price - entry_price) / (entry_price - stop_loss_price).
 """
 
-    # ── 3. Call Anthropic API ─────────────────────────────────────────────────
     try:
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
@@ -273,7 +301,6 @@ Calculate risk-reward as: (target_1_price - entry_price) / (entry_price - stop_l
 
         raw_response = message.content[0].text.strip()
 
-        # Clean JSON (remove markdown fences if present)
         if raw_response.startswith("```"):
             raw_response = raw_response.split("```")[1]
             if raw_response.startswith("json"):
@@ -282,14 +309,13 @@ Calculate risk-reward as: (target_1_price - entry_price) / (entry_price - stop_l
 
         suggestion = json.loads(raw_response)
 
-        # Attach metadata
         suggestion["_meta"] = {
-            "generated_at": datetime.now().isoformat(),
-            "symbol": symbol,
-            "exchange": exchange,
-            "trading_style": trading_style,
+            "generated_at":   datetime.now().isoformat(),
+            "symbol":         symbol,
+            "exchange":       exchange,
+            "trading_style":  trading_style,
             "data_bars_used": len(df_daily),
-            "model": "claude-sonnet-4-20250514",
+            "model":          "claude-sonnet-4-20250514",
         }
 
         logger.info(f"✅ AI suggestion generated for {symbol}: {suggestion.get('overall_bias')} / {suggestion.get('confidence')} confidence")
