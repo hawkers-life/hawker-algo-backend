@@ -53,8 +53,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── IMPORTANT: CORS must be added FIRST before SecurityMiddleware ─────────────
-# This ensures preflight OPTIONS requests get correct CORS headers
+# ── Middleware order: added LAST = runs FIRST on incoming requests ────────────
+
+# GZip runs last (compresses outgoing responses)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Security runs second
+app.add_middleware(SecurityMiddleware)
+
+# CORS added LAST so it runs FIRST — handles OPTIONS preflight before anything else
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -63,12 +70,6 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
     expose_headers=["X-Process-Time"],
 )
-
-# SecurityMiddleware runs after CORS
-app.add_middleware(SecurityMiddleware)
-
-# Gzip compression
-app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 API_PREFIX = "/api/v1"
