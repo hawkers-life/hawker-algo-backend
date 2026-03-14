@@ -35,7 +35,7 @@ anthropic==0.28.0
 yfinance==0.2.40
 pandas==2.0.3
 numpy==1.25.2
-pandas-ta==0.3.14b
+pandas-ta==0.3.14b0
 scipy==1.11.4
 
 # ── Broker SDKs ──────────────────────────────────────────
