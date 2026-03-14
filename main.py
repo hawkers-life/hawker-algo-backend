@@ -1,6 +1,5 @@
 """
 main.py — Hawker Algo Backend Entry Point.
-Starts the FastAPI application with all routes, middleware, and security.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +12,6 @@ from config import get_settings
 from database import init_db
 from middleware.security import SecurityMiddleware
 
-# ── Import all routers ────────────────────────────────────────────────────────
 from routers import auth, dashboard, strategies, risk, admin, broker
 from routers import backtest as backtest_router
 from routers import ai_advisor as ai_router
@@ -21,7 +19,6 @@ from routers import execution as execution_router
 
 settings = get_settings()
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
 logger.remove()
 logger.add(
     sys.stdout,
@@ -39,7 +36,6 @@ logger.add(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events."""
     logger.info("🚀 Hawker Algo Backend starting up...")
     init_db()
     logger.info(f"✅ Environment: {settings.ENVIRONMENT}")
@@ -48,22 +44,17 @@ async def lifespan(app: FastAPI):
     logger.info("👋 Hawker Algo Backend shutting down...")
 
 
-# ── Create FastAPI app ────────────────────────────────────────────────────────
 app = FastAPI(
     title="Hawker Algo API",
     description="Professional Algorithmic Trading Platform for Indian Markets",
     version="1.0.0",
-    docs_url="/api/docs" if settings.DEBUG else None,    # Disable Swagger in production
+    docs_url="/api/docs" if settings.DEBUG else None,
     redoc_url="/api/redoc" if settings.DEBUG else None,
     lifespan=lifespan,
 )
 
-# ── Middleware (order matters — added in reverse execution order) ──────────────
-
-# 1. Security middleware (runs first on request, last on response)
-app.add_middleware(SecurityMiddleware)
-
-# 2. CORS — only allow frontend origin
+# ── IMPORTANT: CORS must be added FIRST before SecurityMiddleware ─────────────
+# This ensures preflight OPTIONS requests get correct CORS headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -73,10 +64,13 @@ app.add_middleware(
     expose_headers=["X-Process-Time"],
 )
 
-# 3. Gzip compression for large responses
+# SecurityMiddleware runs after CORS
+app.add_middleware(SecurityMiddleware)
+
+# Gzip compression
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# ── Register all API routers ──────────────────────────────────────────────────
+# ── Routers ───────────────────────────────────────────────────────────────────
 API_PREFIX = "/api/v1"
 
 app.include_router(auth.router, prefix=API_PREFIX)
@@ -90,10 +84,8 @@ app.include_router(ai_router.router, prefix=API_PREFIX)
 app.include_router(execution_router.router, prefix=API_PREFIX)
 
 
-# ── Health check (public — no auth) ──────────────────────────────────────────
 @app.get("/health")
 def health_check():
-    """Public health check for load balancer / uptime monitoring."""
     return {
         "status": "healthy",
         "service": "Hawker Algo API",
