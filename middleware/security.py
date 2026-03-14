@@ -6,7 +6,7 @@ brute-force protection, suspicious request detection.
 import time
 import re
 from typing import Callable
-from fastapi import Request, Response, HTTPException, status
+from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from loguru import logger
@@ -25,33 +25,29 @@ except Exception:
 
 # ── Suspicious patterns to block ─────────────────────────────────────────────
 ATTACK_PATTERNS = [
-    r"(\bUNION\b.*\bSELECT\b)",          # SQL Injection
-    r"(\bDROP\b.*\bTABLE\b)",             # SQL Injection
-    r"(<script[\s\S]*?>[\s\S]*?</script>)", # XSS
-    r"(javascript:)",                       # XSS
-    r"(\.\./\.\./)",                        # Path traversal
-    r"(/etc/passwd)",                       # Path traversal
-    r"(eval\s*\()",                         # Code injection
+    r"(\bUNION\b.*\bSELECT\b)",
+    r"(\bDROP\b.*\bTABLE\b)",
+    r"(<script[\s\S]*?>[\s\S]*?</script>)",
+    r"(javascript:)",
+    r"(\.\./\.\./)",
+    r"(/etc/passwd)",
+    r"(eval\s*\()",
 ]
 COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in ATTACK_PATTERNS]
 
 
 def is_suspicious(text: str) -> bool:
-    """Check if request content looks like an attack."""
     return any(pattern.search(text) for pattern in COMPILED_PATTERNS)
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
-    """
-    Main security middleware.
-    - Adds security headers to every response
-    - Rate limits all API endpoints
-    - Stricter rate limit on /auth/login
-    - Blocks suspicious payloads
-    - Logs all suspicious activity
-    """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+
+        # ── CRITICAL: Let OPTIONS (CORS preflight) pass through untouched ──
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         client_ip = self._get_client_ip(request)
         path = request.url.path
 
@@ -66,7 +62,6 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                         status_code=400,
                         content={"detail": "Invalid request content"}
                     )
-                # Re-attach body so route handlers can still read it
                 async def receive():
                     return {"type": "http.request", "body": body}
                 request._receive = receive
@@ -97,27 +92,18 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         process_time = time.time() - start_time
 
-        # ── 4. Add security headers to ALL responses ──────────────────────────
+        # ── 4. Add security headers ───────────────────────────────────────────
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https:;"
-        )
         response.headers["X-Process-Time"] = str(round(process_time * 1000, 2)) + "ms"
-        # Hide server info
         response.headers["Server"] = "Hawker-Algo"
 
         return response
 
     def _get_client_ip(self, request: Request) -> str:
-        """Get real IP even behind load balancer / Nginx proxy."""
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
             return forwarded_for.split(",")[0].strip()
