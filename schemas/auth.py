@@ -2,6 +2,7 @@
 schemas/auth.py — Pydantic models for request/response validation.
 These ensure only valid data enters the system.
 """
+
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
 from datetime import datetime
@@ -56,7 +57,7 @@ class TokenResponse(BaseModel):
 access_token: str
 refresh_token: str
 token_type: str = "bearer"
-expires_in: int  # seconds
+expires_in: int
 
 class RefreshTokenRequest(BaseModel):
 refresh_token: str
