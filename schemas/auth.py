@@ -64,7 +64,10 @@ class RefreshTokenRequest(BaseModel):
 
 
 class UserResponse(BaseModel):
-    id: str
+    from uuid import UUID
+
+id: UUID
+
     email: str
     full_name: str
     role: str
