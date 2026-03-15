@@ -1,6 +1,7 @@
 """
 main.py — Hawker Algo Backend Entry Point.
 """
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -19,12 +20,15 @@ from routers import execution as execution_router
 
 settings = get_settings()
 
+# ───────────────────────────────── Logging ─────────────────────────────────
+
 logger.remove()
 logger.add(
     sys.stdout,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan> - <level>{message}</level>",
     level="DEBUG" if settings.DEBUG else "INFO",
 )
+
 logger.add(
     "logs/hawker_algo.log",
     rotation="100 MB",
@@ -33,16 +37,18 @@ logger.add(
     level="INFO",
 )
 
+# ───────────────────────────── App Lifespan ────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Hawker Algo Backend starting up...")
     init_db()
     logger.info(f"✅ Environment: {settings.ENVIRONMENT}")
-    logger.info(f"✅ Database connected")
+    logger.info("✅ Database connected")
     yield
     logger.info("👋 Hawker Algo Backend shutting down...")
 
+# ───────────────────────────── FastAPI App ─────────────────────────────────
 
 app = FastAPI(
     title="Hawker Algo API",
@@ -53,25 +59,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── Middleware order: added LAST = runs FIRST on incoming requests ────────────
+# ───────────────────────────── Middleware Order ────────────────────────────
+# NOTE:
+# Last added middleware runs FIRST
 
-# GZip runs last (compresses outgoing responses)
+# GZip (compress responses)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Security runs second
+# Security middleware
 app.add_middleware(SecurityMiddleware)
 
-# CORS added LAST so it runs FIRST — handles OPTIONS preflight before anything else
+# CORS middleware (must run FIRST to handle OPTIONS preflight)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=[
+        "https://hawkers-life.netlify.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
-    expose_headers=["X-Process-Time"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+# ───────────────────────────── Routers ─────────────────────────────────────
+
 API_PREFIX = "/api/v1"
 
 app.include_router(auth.router, prefix=API_PREFIX)
@@ -84,6 +96,7 @@ app.include_router(backtest_router.router, prefix=API_PREFIX)
 app.include_router(ai_router.router, prefix=API_PREFIX)
 app.include_router(execution_router.router, prefix=API_PREFIX)
 
+# ───────────────────────────── Health Routes ───────────────────────────────
 
 @app.get("/health")
 def health_check():
@@ -93,7 +106,8 @@ def health_check():
         "version": settings.APP_VERSION,
     }
 
-
 @app.get("/")
 def root():
-    return {"message": "Hawker Algo API. Visit /api/docs for documentation (dev only)."}
+    return {
+        "message": "Hawker Algo API. Visit /api/docs for documentation (dev only)."
+    }
